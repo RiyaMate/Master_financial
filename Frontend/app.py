@@ -1,148 +1,214 @@
+from dotenv import load_dotenv
+import os
 import streamlit as st
 import requests
 import pandas as pd
 import snowflake.connector
-from datetime import datetime
 import json
-import os
+import matplotlib.pyplot as plt
 
-# ✅ Correct FastAPI Endpoint
+# ✅ Load environment variables explicitly
+dotenv_path = "/app/.env"
+if os.path.exists(dotenv_path):
+    load_dotenv(dotenv_path)
+else:
+    st.error(f"❌ .env file not found at {dotenv_path}")
+
+# ✅ Streamlit Page Config
+st.set_page_config(page_title="Snowflake Query & Visualization", layout="wide")
+st.sidebar.title("📊 Navigation")
+
+# ✅ API Endpoint and Config Path
 API_URL = "https://sec-data-filling-fastapi-app-974490277552.us-central1.run.app/get_quarter"
-config_path = "/app/Airflow/config/sec_config.json"  # ✅ Use direct path
+CONFIG_PATH = "/app/Airflow/config/sec_config.json"
 
-# Check if the file exists before opening
-if not os.path.exists(config_path):
-    raise FileNotFoundError(f"Config file not found at: {config_path}")
-
-with open(config_path, 'r') as config_file:
-    config = json.load(config_file)
-
-# ✅ Snowflake Configuration
-SNOWFLAKE_ACCOUNT = config['snowflake_account']
-SNOWFLAKE_ROLE = config['snowflake_role']
-SNOWFLAKE_WAREHOUSE = config['snowflake_warehouse']
-SNOWFLAKE_DATABASE = config['snowflake_db']
-SNOWFLAKE_SCHEMA = config['snowflake_schema_raw_data']
-
-def update_config(date_input):
-    # Load the existing config
-    with open(config_path, 'r') as config_file:
+# ✅ Load Config File Safely
+try:
+    with open(CONFIG_PATH, 'r') as config_file:
         config = json.load(config_file)
-    
-    # Update the date field
-    config['date'] = date_input
-    
-    # Save the updated config
-    with open(config_path, 'w') as config_file:
-        json.dump(config, config_file, indent=2)
-    
-    print(f"Updated config with date: {date_input}")
+except FileNotFoundError:
+    st.error(f"❌ Config file not found at: {CONFIG_PATH}")
+    st.stop()
 
-# ✅ Snowflake Connection Function
+# ✅ Load Snowflake Credentials from Environment Variables
+SNOWFLAKE_USER = os.getenv("SNOWFLAKE_USER")
+SNOWFLAKE_PASSWORD = os.getenv("SNOWFLAKE_PASSWORD")  # ❌ Not displayed for security
+SNOWFLAKE_ACCOUNT = os.getenv("SNOWFLAKE_ACCOUNT")
+SNOWFLAKE_WAREHOUSE = os.getenv("SNOWFLAKE_WAREHOUSE")
+SNOWFLAKE_DATABASE = os.getenv("SNOWFLAKE_DATABASE")
+SNOWFLAKE_SCHEMA = os.getenv("SNOWFLAKE_SCHEMA")
+SNOWFLAKE_ROLE = os.getenv("SNOWFLAKE_ROLE")
+
+# ✅ Display Environment Variables in Sidebar
+st.sidebar.subheader("🔍 Environment Variables")
+env_vars = {
+    "SNOWFLAKE_USER": SNOWFLAKE_USER,
+    "SNOWFLAKE_ACCOUNT": SNOWFLAKE_ACCOUNT,
+    "SNOWFLAKE_WAREHOUSE": SNOWFLAKE_WAREHOUSE,
+    "SNOWFLAKE_DATABASE": SNOWFLAKE_DATABASE,
+    "SNOWFLAKE_SCHEMA": SNOWFLAKE_SCHEMA,
+    "SNOWFLAKE_ROLE": SNOWFLAKE_ROLE
+}
+
+for key, value in env_vars.items():
+    st.sidebar.text(f"{key}: {value if value else '❌ Not Set'}")
+
+# ✅ Validate Credentials
+if not all([SNOWFLAKE_USER, SNOWFLAKE_PASSWORD, SNOWFLAKE_ACCOUNT]):
+    st.error("❌ Missing Snowflake credentials. Check your `.env` file or environment variables.")
+    st.stop()
+
+# ✅ Function to Establish Snowflake Connection
 def get_snowflake_connection():
-    """Establish a secure connection to Snowflake."""
+    """Always return a new connection to Snowflake with `insecure_mode=True` (Debugging Only)."""
     try:
         conn = snowflake.connector.connect(
-            user="SHUSHIL",
-            password="Ganesh@1999",
+            user=SNOWFLAKE_USER,
+            password=SNOWFLAKE_PASSWORD,
             account=SNOWFLAKE_ACCOUNT,
             warehouse=SNOWFLAKE_WAREHOUSE,
             database=SNOWFLAKE_DATABASE,
             schema=SNOWFLAKE_SCHEMA,
-            role=SNOWFLAKE_ROLE
+            role=SNOWFLAKE_ROLE,
+            client_session_keep_alive=True,  # ✅ Prevent session timeouts
+            login_timeout=60,  # ✅ Increase timeout
+            autocommit=True,  # ✅ Prevent connection closing issues
+            insecure_mode=True  # ✅ Debugging only (REMOVE in production)
         )
         return conn
     except Exception as e:
-        st.error(f"Error connecting to Snowflake: {e}")
+        st.error(f"❌ Snowflake connection failed: {e}")
         return None
 
-# ✅ Fetch Table List
+# ✅ Fetch List of Tables
 def get_table_list():
-    """Retrieve all tables in SEC_SCHEMA."""
-    conn = get_snowflake_connection()
-    if conn:
-        try:
+    """Retrieve all tables in the configured Snowflake schema with a fresh connection."""
+    try:
+        conn = get_snowflake_connection()
+        if conn:
             query = f"SHOW TABLES IN {SNOWFLAKE_DATABASE}.{SNOWFLAKE_SCHEMA}"
             df = pd.read_sql(query, conn)
             conn.close()
-            return df["name"].tolist()
-        except Exception as e:
-            st.error(f"Error fetching table list: {e}")
-            return []
-    return []
+            return df["name"].tolist() if "name" in df.columns else []
+    except Exception as e:
+        st.error(f"❌ Error fetching table list: {e}")
+        return []
 
-# ✅ Fetch Table Data
+# ✅ Fetch Data from a Selected Table
 def fetch_table_data(table_name):
-    """Retrieve up to 100 rows from a table in SEC_SCHEMA."""
-    conn = get_snowflake_connection()
-    if conn:
-        try:
+    """Retrieve up to 100 rows from a selected table with a fresh connection."""
+    try:
+        conn = get_snowflake_connection()
+        if conn:
             query = f'SELECT * FROM {SNOWFLAKE_DATABASE}.{SNOWFLAKE_SCHEMA}."{table_name}" LIMIT 100'
             df = pd.read_sql(query, conn)
             conn.close()
-            return df
-        except Exception as e:
-            st.error(f"Error fetching data: {e}")
-            return pd.DataFrame()
-    return pd.DataFrame()
+            return df if not df.empty else pd.DataFrame()
+    except Exception as e:
+        st.error(f"❌ Error fetching data from `{table_name}`: {e}")
+        return pd.DataFrame()
 
-# ✅ Validate Date Format
-def is_valid_date(date_str):
-    """Check if the date is in the correct format (YYYY-MM-DD) and within the valid range."""
+# ✅ Execute Custom SQL Query
+def execute_query(query):
+    """Execute a user-defined query on Snowflake with a fresh connection."""
     try:
-        dt = datetime.strptime(date_str, "%Y-%m-%d")
-        return 2009 <= dt.year <= 2024  # Ensure the date is in the range 2009-2024
-    except ValueError:
-        return False
-
-# ✅ Streamlit UI
-st.set_page_config(page_title="Quarter Finder & Snowflake Viewer", layout="wide")
-st.sidebar.title("📊 Navigation")
+        conn = get_snowflake_connection()
+        if conn:
+            if not query.strip().lower().startswith("select"):
+                st.error("❌ Only SELECT queries are allowed for security reasons.")
+                return pd.DataFrame()
+            df = pd.read_sql(query, conn)
+            conn.close()
+            return df if not df.empty else pd.DataFrame()
+    except Exception as e:
+        st.error(f"❌ Query Execution Failed: {e}")
+        return pd.DataFrame()
 
 # ✅ Sidebar - Select View
-view_option = st.sidebar.radio("Choose View:", ["Find Quarter", "View Snowflake Tables"])
+view_option = st.sidebar.radio("Choose View:", ["Find Quarter", "View Snowflake Tables", "Query Snowflake Table", "Visualizations"])
 
 # ✅ Quarter Finder Feature
 if view_option == "Find Quarter":
     st.title("📆 Quarter Finder API")
-    st.markdown("Enter a date (YYYY-MM-DD) to find the corresponding **year and quarter**.")
-    
     date_input = st.text_input("Enter Date (YYYY-MM-DD)", "2023-06-15")
-    
-    if st.button("Get Quarter"):
-        if date_input and is_valid_date(date_input):
-            # Send POST request to FastAPI backend
-            response = requests.post(API_URL, json={"date": date_input.strip()})
 
-            if response.status_code == 200:
-                result = response.json()
-                st.success(f"🗓 The corresponding year and quarter: **{result['year_quarter']}**")
-                update_config(date_input)
-                st.info(f"Updated config with date: {date_input}")  # Add logging to verify the update
-            else:
-                st.error(f"⚠️ API Error: {response.status_code} - {response.text}")
+    if st.button("Get Quarter"):
+        if date_input:
+            try:
+                response = requests.post(API_URL, json={"date": date_input.strip()})
+                if response.status_code == 200:
+                    result = response.json()
+                    st.success(f"🗓 The corresponding year and quarter: **{result['year_quarter']}**")
+                else:
+                    st.error(f"⚠️ API Error: {response.status_code} - {response.text}")
+            except requests.exceptions.RequestException as e:
+                st.error(f"❌ API Request Failed: {e}")
         else:
-            st.error("❌ Invalid date! Please enter a valid date between **2009-2024**.")
+            st.error("❌ Please enter a valid date.")
 
 # ✅ Snowflake Table Viewer Feature
 elif view_option == "View Snowflake Tables":
     st.title("📂 Snowflake Table Viewer")
-
     tables = get_table_list()
-   
+
     if tables:
         selected_table = st.sidebar.selectbox("Select a Table", tables)
-       
         if selected_table:
             st.subheader(f"📄 Data from `{selected_table}`")
-           
-            query = st.text_area("📝 SQL Query", f'SELECT * FROM {SNOWFLAKE_DATABASE}.{SNOWFLAKE_SCHEMA}."{selected_table}" LIMIT 100')
+            df = fetch_table_data(selected_table)
 
-            if st.button("Run Query"):
-                df = fetch_table_data(selected_table)
-                if not df.empty:
-                    st.dataframe(df)
-                else:
-                    st.error("⚠️ No data retrieved. Check table permissions or existence.")
+            if not df.empty:
+                st.dataframe(df)
+            else:
+                st.warning("⚠️ No data available in this table.")
     else:
         st.error("⚠️ No tables found. Check your **database connection** or **permissions**.")
+
+# ✅ Query Execution Feature
+elif view_option == "Query Snowflake Table":
+    st.title("📝 Execute Custom SQL Query on Snowflake")
+    query = st.text_area("Enter your SQL query (Only SELECT queries allowed)", "SELECT * FROM PUBLIC.SAMPLE_TABLE LIMIT 10")
+
+    if st.button("Run Query"):
+        df = execute_query(query)
+
+        if not df.empty:
+            st.dataframe(df)
+        else:
+            st.warning("⚠️ No data returned from query.")
+
+# ✅ Visualization Feature
+elif view_option == "Visualizations":
+    st.title("📈 Data Visualizations")
+    tables = get_table_list()
+
+    if tables:
+        selected_table = st.sidebar.selectbox("Select a Table for Visualization", tables)
+        if selected_table:
+            df = fetch_table_data(selected_table)
+
+            if not df.empty:
+                st.dataframe(df)
+
+                viz_type = st.sidebar.selectbox("Choose Visualization Type", ["Bar Chart", "Line Chart", "Pie Chart"])
+
+                cat_cols = df.select_dtypes(include=['object']).columns.tolist()
+                num_cols = df.select_dtypes(include=['number']).columns.tolist()
+
+                if viz_type == "Bar Chart" and cat_cols:
+                    cat_col = st.selectbox("Select Categorical Column", cat_cols)
+                    fig, ax = plt.subplots()
+                    df[cat_col].value_counts().plot(kind='bar', ax=ax)
+                    st.pyplot(fig)
+
+                elif viz_type == "Line Chart" and num_cols:
+                    num_col = st.selectbox("Select Numerical Column", num_cols)
+                    fig, ax = plt.subplots()
+                    df[num_col].plot(kind='line', ax=ax)
+                    st.pyplot(fig)
+
+                elif viz_type == "Pie Chart" and cat_cols:
+                    cat_col_pie = st.selectbox("Select Categorical Column for Pie Chart", cat_cols)
+                    fig, ax = plt.subplots()
+                    df[cat_col_pie].value_counts().plot(kind='pie', autopct='%1.1f%%', ax=ax)
+                    st.pyplot(fig)

@@ -6,3 +6,5 @@ requests
 selenium
 webdriver-manager
 requests
+matplotlib
+seaborn

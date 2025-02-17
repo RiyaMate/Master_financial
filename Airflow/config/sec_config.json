@@ -1,13 +1,13 @@
 {
   "AWS_CONN_ID": "aws_default",
-  "BUCKET_NAME": "bigdatateam5-pdfreader",
+  "BUCKET_NAME": "aimeet",
   "TEMP_DATA_FOLDER": "/opt/airflow/temp_data",
   "S3_BASE_FOLDER": "sec_raw_data",
-  "snowflake_schema_raw_data": "dbt_SCHEMA",
-  "snowflake_warehouse": "dbt_WH",
-  "snowflake_db": "dbt_DB",
-  "snowflake_account": "fipbiwy-mj87522",
-  "snowflake_role": "dbt_role",
+  "snowflake_schema_raw_data": "PUBLIC",
+  "snowflake_warehouse": "COMPUTE_WH",
+  "snowflake_db": "AIRFLOW",
+  "snowflake_account": "qiqzsry-hv39958",
+  "snowflake_role": "ACCOUNTADMIN",
   "SNOWFLAKE_CONN_ID": "snowflake_default",
   "BASE_URL": "https://www.sec.gov/data-research/sec-markets-data/financial-statement-data-sets",
   "default_args": {
@@ -21,5 +21,5 @@
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/110.0.0.0 Safari/537.36",
     "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/108.0.0.0 Safari/537.36"
   ],
-  "date": "2024-12-10"
+  "date": "2023-06-15"
 }
