@@ -1,10 +1,8 @@
 from dotenv import load_dotenv
 import os
 import streamlit as st
-import requests
 import pandas as pd
 import snowflake.connector
-import json
 import matplotlib.pyplot as plt
 
 # ✅ Load environment variables explicitly
@@ -18,40 +16,14 @@ else:
 st.set_page_config(page_title="Snowflake Query & Visualization", layout="wide")
 st.sidebar.title("📊 Navigation")
 
-# ✅ API Endpoint and Config Path
-API_URL = "https://sec-data-filling-fastapi-app-974490277552.us-central1.run.app/get_quarter"
-CONFIG_PATH = "/app/Airflow/config/sec_config.json"
-
-# ✅ Load Config File Safely
-try:
-    with open(CONFIG_PATH, 'r') as config_file:
-        config = json.load(config_file)
-except FileNotFoundError:
-    st.error(f"❌ Config file not found at: {CONFIG_PATH}")
-    st.stop()
-
 # ✅ Load Snowflake Credentials from Environment Variables
 SNOWFLAKE_USER = os.getenv("SNOWFLAKE_USER")
-SNOWFLAKE_PASSWORD = os.getenv("SNOWFLAKE_PASSWORD")  # ❌ Not displayed for security
+SNOWFLAKE_PASSWORD = os.getenv("SNOWFLAKE_PASSWORD")
 SNOWFLAKE_ACCOUNT = os.getenv("SNOWFLAKE_ACCOUNT")
 SNOWFLAKE_WAREHOUSE = os.getenv("SNOWFLAKE_WAREHOUSE")
 SNOWFLAKE_DATABASE = os.getenv("SNOWFLAKE_DATABASE")
 SNOWFLAKE_SCHEMA = os.getenv("SNOWFLAKE_SCHEMA")
 SNOWFLAKE_ROLE = os.getenv("SNOWFLAKE_ROLE")
-
-# ✅ Display Environment Variables in Sidebar
-st.sidebar.subheader("🔍 Environment Variables")
-env_vars = {
-    "SNOWFLAKE_USER": SNOWFLAKE_USER,
-    "SNOWFLAKE_ACCOUNT": SNOWFLAKE_ACCOUNT,
-    "SNOWFLAKE_WAREHOUSE": SNOWFLAKE_WAREHOUSE,
-    "SNOWFLAKE_DATABASE": SNOWFLAKE_DATABASE,
-    "SNOWFLAKE_SCHEMA": SNOWFLAKE_SCHEMA,
-    "SNOWFLAKE_ROLE": SNOWFLAKE_ROLE
-}
-
-for key, value in env_vars.items():
-    st.sidebar.text(f"{key}: {value if value else '❌ Not Set'}")
 
 # ✅ Validate Credentials
 if not all([SNOWFLAKE_USER, SNOWFLAKE_PASSWORD, SNOWFLAKE_ACCOUNT]):
@@ -60,7 +32,6 @@ if not all([SNOWFLAKE_USER, SNOWFLAKE_PASSWORD, SNOWFLAKE_ACCOUNT]):
 
 # ✅ Function to Establish Snowflake Connection
 def get_snowflake_connection():
-    """Always return a new connection to Snowflake with `insecure_mode=True` (Debugging Only)."""
     try:
         conn = snowflake.connector.connect(
             user=SNOWFLAKE_USER,
@@ -70,10 +41,9 @@ def get_snowflake_connection():
             database=SNOWFLAKE_DATABASE,
             schema=SNOWFLAKE_SCHEMA,
             role=SNOWFLAKE_ROLE,
-            client_session_keep_alive=True,  # ✅ Prevent session timeouts
-            login_timeout=60,  # ✅ Increase timeout
-            autocommit=True,  # ✅ Prevent connection closing issues
-            insecure_mode=True  # ✅ Debugging only (REMOVE in production)
+            client_session_keep_alive=True,
+            login_timeout=60,
+            autocommit=True
         )
         return conn
     except Exception as e:
@@ -82,7 +52,6 @@ def get_snowflake_connection():
 
 # ✅ Fetch List of Tables
 def get_table_list():
-    """Retrieve all tables in the configured Snowflake schema with a fresh connection."""
     try:
         conn = get_snowflake_connection()
         if conn:
@@ -95,14 +64,19 @@ def get_table_list():
         return []
 
 # ✅ Fetch Data from a Selected Table
-def fetch_table_data(table_name):
-    """Retrieve up to 100 rows from a selected table with a fresh connection."""
+def fetch_table_data(table_name, filters=None):
     try:
         conn = get_snowflake_connection()
         if conn:
-            query = f'SELECT * FROM {SNOWFLAKE_DATABASE}.{SNOWFLAKE_SCHEMA}."{table_name}" LIMIT 100'
+            query = f'SELECT * FROM {SNOWFLAKE_DATABASE}.{SNOWFLAKE_SCHEMA}."{table_name}" LIMIT 1000'
             df = pd.read_sql(query, conn)
             conn.close()
+
+            if not df.empty and filters:
+                for column, value in filters.items():
+                    if value and value != "":  
+                        df = df[df[column] == value]
+
             return df if not df.empty else pd.DataFrame()
     except Exception as e:
         st.error(f"❌ Error fetching data from `{table_name}`: {e}")
@@ -110,7 +84,6 @@ def fetch_table_data(table_name):
 
 # ✅ Execute Custom SQL Query
 def execute_query(query):
-    """Execute a user-defined query on Snowflake with a fresh connection."""
     try:
         conn = get_snowflake_connection()
         if conn:
@@ -125,40 +98,37 @@ def execute_query(query):
         return pd.DataFrame()
 
 # ✅ Sidebar - Select View
-view_option = st.sidebar.radio("Choose View:", ["Find Quarter", "View Snowflake Tables", "Query Snowflake Table", "Visualizations"])
+view_option = st.sidebar.radio("Choose View:", ["View Snowflake Tables", "Query Snowflake Table", "Visualizations"])
 
-# ✅ Quarter Finder Feature
-if view_option == "Find Quarter":
-    st.title("📆 Quarter Finder API")
-    date_input = st.text_input("Enter Date (YYYY-MM-DD)", "2023-06-15")
-
-    if st.button("Get Quarter"):
-        if date_input:
-            try:
-                response = requests.post(API_URL, json={"date": date_input.strip()})
-                if response.status_code == 200:
-                    result = response.json()
-                    st.success(f"🗓 The corresponding year and quarter: **{result['year_quarter']}**")
-                else:
-                    st.error(f"⚠️ API Error: {response.status_code} - {response.text}")
-            except requests.exceptions.RequestException as e:
-                st.error(f"❌ API Request Failed: {e}")
-        else:
-            st.error("❌ Please enter a valid date.")
-
-# ✅ Snowflake Table Viewer Feature
-elif view_option == "View Snowflake Tables":
+# ✅ Snowflake Table Viewer Feature with Column Filters
+if view_option == "View Snowflake Tables":
     st.title("📂 Snowflake Table Viewer")
     tables = get_table_list()
 
     if tables:
         selected_table = st.sidebar.selectbox("Select a Table", tables)
         if selected_table:
-            st.subheader(f"📄 Data from `{selected_table}`")
-            df = fetch_table_data(selected_table)
+            raw_df = fetch_table_data(selected_table)
 
-            if not df.empty:
-                st.dataframe(df)
+            if not raw_df.empty:
+                st.sidebar.subheader("🔍 Apply Column Filters")
+
+                filters = {}
+                for column in raw_df.columns:
+                    unique_values = raw_df[column].dropna().unique()
+                    if len(unique_values) < 15:
+                        filters[column] = st.sidebar.selectbox(f"Filter by {column}", [""] + list(unique_values), index=0)
+                    elif raw_df[column].dtype in ["int64", "float64"]:
+                        min_val, max_val = int(raw_df[column].min()), int(raw_df[column].max())
+                        filters[column] = st.sidebar.slider(f"Filter {column}", min_val, max_val, (min_val, max_val))
+
+                filtered_df = fetch_table_data(selected_table, filters)
+                if filtered_df.empty:
+                    st.warning("⚠️ No data matches the selected filters. Showing unfiltered data.")
+                    st.dataframe(raw_df.head(10))
+                else:
+                    st.subheader(f"📄 Filtered Data from `{selected_table}`")
+                    st.dataframe(filtered_df)
             else:
                 st.warning("⚠️ No data available in this table.")
     else:
@@ -190,7 +160,7 @@ elif view_option == "Visualizations":
             if not df.empty:
                 st.dataframe(df)
 
-                viz_type = st.sidebar.selectbox("Choose Visualization Type", ["Bar Chart", "Line Chart", "Pie Chart"])
+                viz_type = st.sidebar.selectbox("Choose Visualization Type", ["Bar Chart", "Line Chart", "Pie Chart", "Scatter Plot", "Histogram"])
 
                 cat_cols = df.select_dtypes(include=['object']).columns.tolist()
                 num_cols = df.select_dtypes(include=['number']).columns.tolist()
@@ -211,4 +181,4 @@ elif view_option == "Visualizations":
                     cat_col_pie = st.selectbox("Select Categorical Column for Pie Chart", cat_cols)
                     fig, ax = plt.subplots()
                     df[cat_col_pie].value_counts().plot(kind='pie', autopct='%1.1f%%', ax=ax)
-                    st.pyplot(fig)
+                   
