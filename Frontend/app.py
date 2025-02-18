@@ -22,12 +22,10 @@ SNOWFLAKE_PASSWORD = os.getenv("SNOWFLAKE_PASSWORD")
 SNOWFLAKE_ACCOUNT = os.getenv("SNOWFLAKE_ACCOUNT")
 SNOWFLAKE_WAREHOUSE = os.getenv("SNOWFLAKE_WAREHOUSE")
 SNOWFLAKE_DATABASE = os.getenv("SNOWFLAKE_DATABASE")
-SNOWFLAKE_SCHEMA = os.getenv("SNOWFLAKE_SCHEMA")
-SNOWFLAKE_ROLE = os.getenv("SNOWFLAKE_ROLE")
 
 # ✅ Validate Credentials
-if not all([SNOWFLAKE_USER, SNOWFLAKE_PASSWORD, SNOWFLAKE_ACCOUNT]):
-    st.error("❌ Missing Snowflake credentials. Check your `.env` file or environment variables.")
+if not all([SNOWFLAKE_USER, SNOWFLAKE_PASSWORD, SNOWFLAKE_ACCOUNT, SNOWFLAKE_DATABASE]):
+    st.error("❌ Missing Snowflake credentials or database name. Check your `.env` file or input.")
     st.stop()
 
 # ✅ Function to Establish Snowflake Connection
@@ -39,8 +37,6 @@ def get_snowflake_connection():
             account=SNOWFLAKE_ACCOUNT,
             warehouse=SNOWFLAKE_WAREHOUSE,
             database=SNOWFLAKE_DATABASE,
-            schema=SNOWFLAKE_SCHEMA,
-            role=SNOWFLAKE_ROLE,
             client_session_keep_alive=True,
             login_timeout=60,
             autocommit=True
@@ -50,135 +46,118 @@ def get_snowflake_connection():
         st.error(f"❌ Snowflake connection failed: {e}")
         return None
 
-# ✅ Fetch List of Tables
-def get_table_list():
+# ✅ Fetch List of Schemas
+def get_schema_list():
     try:
         conn = get_snowflake_connection()
         if conn:
-            query = f"SHOW TABLES IN {SNOWFLAKE_DATABASE}.{SNOWFLAKE_SCHEMA}"
+            query = "SELECT SCHEMA_NAME FROM INFORMATION_SCHEMA.SCHEMATA"
             df = pd.read_sql(query, conn)
             conn.close()
-            return df["name"].tolist() if "name" in df.columns else []
+            return df["SCHEMA_NAME"].tolist() if "SCHEMA_NAME" in df.columns else []
+    except Exception as e:
+        st.error(f"❌ Error fetching schema list: {e}")
+        return []
+
+# ✅ Fetch List of Tables
+def get_table_list(schema):
+    try:
+        conn = get_snowflake_connection()
+        if conn:
+            query = f"SELECT TABLE_NAME FROM {SNOWFLAKE_DATABASE}.INFORMATION_SCHEMA.TABLES WHERE TABLE_SCHEMA = '{schema}'"
+            df = pd.read_sql(query, conn)
+            conn.close()
+
+            if df.empty:
+                st.warning("⚠️ No tables found in the selected schema.")
+                return []
+
+            return df["TABLE_NAME"].tolist() if "TABLE_NAME" in df.columns else []
     except Exception as e:
         st.error(f"❌ Error fetching table list: {e}")
         return []
 
-# ✅ Fetch Data from a Selected Table
-def fetch_table_data(table_name, filters=None):
+# ✅ Fetch Data with Filters and Pagination
+def fetch_filtered_data(schema, table_name, offset=0, limit=5000, filters=None):
     try:
         conn = get_snowflake_connection()
         if conn:
-            query = f'SELECT * FROM {SNOWFLAKE_DATABASE}.{SNOWFLAKE_SCHEMA}."{table_name}" LIMIT 1000'
-            df = pd.read_sql(query, conn)
-            conn.close()
+            # Base query
+            query = f'SELECT * FROM {SNOWFLAKE_DATABASE}.{schema}."{table_name}"'
 
-            if not df.empty and filters:
+            # Apply filters in SQL query for efficiency
+            where_clauses = []
+            if filters:
                 for column, value in filters.items():
-                    if value and value != "":  
-                        df = df[df[column] == value]
+                    if isinstance(value, tuple):  # Numerical range filter
+                        where_clauses.append(f'"{column}" BETWEEN {value[0]} AND {value[1]}')
+                    elif value and value != "":  # Categorical selection
+                        where_clauses.append(f'"{column}" = \'{value}\'')
 
-            return df if not df.empty else pd.DataFrame()
-    except Exception as e:
-        st.error(f"❌ Error fetching data from `{table_name}`: {e}")
-        return pd.DataFrame()
+            if where_clauses:
+                query += " WHERE " + " AND ".join(where_clauses)
 
-# ✅ Execute Custom SQL Query
-def execute_query(query):
-    try:
-        conn = get_snowflake_connection()
-        if conn:
-            if not query.strip().lower().startswith("select"):
-                st.error("❌ Only SELECT queries are allowed for security reasons.")
-                return pd.DataFrame()
+            query += f' LIMIT {limit} OFFSET {offset}'
+
             df = pd.read_sql(query, conn)
             conn.close()
             return df if not df.empty else pd.DataFrame()
     except Exception as e:
-        st.error(f"❌ Query Execution Failed: {e}")
+        st.error(f"❌ Error fetching filtered data: {e}")
         return pd.DataFrame()
+
+# ✅ Sidebar - Select Schema
+schemas = get_schema_list()
+if schemas:
+    SNOWFLAKE_SCHEMA = st.sidebar.selectbox("Select Schema", schemas)
+else:
+    st.error("❌ No schemas found. Check database connection or permissions.")
+    SNOWFLAKE_SCHEMA = None
 
 # ✅ Sidebar - Select View
 view_option = st.sidebar.radio("Choose View:", ["View Snowflake Tables", "Query Snowflake Table", "Visualizations"])
 
-# ✅ Snowflake Table Viewer Feature with Column Filters
-if view_option == "View Snowflake Tables":
+# ✅ Snowflake Table Viewer with Dynamic Filters & Pagination
+if view_option == "View Snowflake Tables" and SNOWFLAKE_SCHEMA:
     st.title("📂 Snowflake Table Viewer")
-    tables = get_table_list()
+
+    tables = get_table_list(SNOWFLAKE_SCHEMA)
 
     if tables:
         selected_table = st.sidebar.selectbox("Select a Table", tables)
+
         if selected_table:
-            raw_df = fetch_table_data(selected_table)
+            st.sidebar.subheader("🔍 Pagination & Row Limit")
+            row_limit = st.sidebar.slider("Rows per Page", 100, 10000, 5000, 500)
+            page_number = st.sidebar.number_input("Page Number", min_value=1, value=1, step=1)
+            offset = (page_number - 1) * row_limit
 
-            if not raw_df.empty:
-                st.sidebar.subheader("🔍 Apply Column Filters")
+            # Fetch FULL data (first 5000 rows) to get filter options
+            full_df = fetch_filtered_data(SNOWFLAKE_SCHEMA, selected_table, limit=5000)
 
-                filters = {}
-                for column in raw_df.columns:
-                    unique_values = raw_df[column].dropna().unique()
-                    if len(unique_values) < 15:
-                        filters[column] = st.sidebar.selectbox(f"Filter by {column}", [""] + list(unique_values), index=0)
-                    elif raw_df[column].dtype in ["int64", "float64"]:
-                        min_val, max_val = int(raw_df[column].min()), int(raw_df[column].max())
-                        filters[column] = st.sidebar.slider(f"Filter {column}", min_val, max_val, (min_val, max_val))
+            filters = {}
+            if not full_df.empty:
+                st.sidebar.subheader("🎯 Column Filters")
 
-                filtered_df = fetch_table_data(selected_table, filters)
-                if filtered_df.empty:
-                    st.warning("⚠️ No data matches the selected filters. Showing unfiltered data.")
-                    st.dataframe(raw_df.head(10))
+                for column in full_df.columns:
+                    unique_values = full_df[column].dropna().unique()
+                    if len(unique_values) < 15:  # Categorical filter
+                        filters[column] = st.sidebar.selectbox(f"Filter {column}", [""] + list(unique_values), key=column)
+                    elif pd.api.types.is_numeric_dtype(full_df[column]):  # Numerical range filter
+                        min_val, max_val = int(full_df[column].min()), int(full_df[column].max())
+                        filters[column] = st.sidebar.slider(f"Filter {column}", min_val, max_val, (min_val, max_val), key=column)
+
+            # Apply button for filters
+            apply_filters = st.sidebar.button("Apply Filters")
+
+            # Fetch paginated & filtered data only if "Apply Filters" is clicked
+            if apply_filters:
+                filtered_df = fetch_filtered_data(SNOWFLAKE_SCHEMA, selected_table, offset=offset, limit=row_limit, filters=filters)
+
+                if not filtered_df.empty:
+                    st.subheader(f"📄 Filtered Data from `{selected_table}` (Page {page_number})")
+                    st.data_editor(filtered_df)  # Efficient DataFrame rendering
                 else:
-                    st.subheader(f"📄 Filtered Data from `{selected_table}`")
-                    st.dataframe(filtered_df)
-            else:
-                st.warning("⚠️ No data available in this table.")
+                    st.warning("⚠️ No data available with the applied filters.")
     else:
         st.error("⚠️ No tables found. Check your **database connection** or **permissions**.")
-
-# ✅ Query Execution Feature
-elif view_option == "Query Snowflake Table":
-    st.title("📝 Execute Custom SQL Query on Snowflake")
-    query = st.text_area("Enter your SQL query (Only SELECT queries allowed)", "SELECT * FROM PUBLIC.SAMPLE_TABLE LIMIT 10")
-
-    if st.button("Run Query"):
-        df = execute_query(query)
-
-        if not df.empty:
-            st.dataframe(df)
-        else:
-            st.warning("⚠️ No data returned from query.")
-
-# ✅ Visualization Feature
-elif view_option == "Visualizations":
-    st.title("📈 Data Visualizations")
-    tables = get_table_list()
-
-    if tables:
-        selected_table = st.sidebar.selectbox("Select a Table for Visualization", tables)
-        if selected_table:
-            df = fetch_table_data(selected_table)
-
-            if not df.empty:
-                st.dataframe(df)
-
-                viz_type = st.sidebar.selectbox("Choose Visualization Type", ["Bar Chart", "Line Chart", "Pie Chart", "Scatter Plot", "Histogram"])
-
-                cat_cols = df.select_dtypes(include=['object']).columns.tolist()
-                num_cols = df.select_dtypes(include=['number']).columns.tolist()
-
-                if viz_type == "Bar Chart" and cat_cols:
-                    cat_col = st.selectbox("Select Categorical Column", cat_cols)
-                    fig, ax = plt.subplots()
-                    df[cat_col].value_counts().plot(kind='bar', ax=ax)
-                    st.pyplot(fig)
-
-                elif viz_type == "Line Chart" and num_cols:
-                    num_col = st.selectbox("Select Numerical Column", num_cols)
-                    fig, ax = plt.subplots()
-                    df[num_col].plot(kind='line', ax=ax)
-                    st.pyplot(fig)
-
-                elif viz_type == "Pie Chart" and cat_cols:
-                    cat_col_pie = st.selectbox("Select Categorical Column for Pie Chart", cat_cols)
-                    fig, ax = plt.subplots()
-                    df[cat_col_pie].value_counts().plot(kind='pie', autopct='%1.1f%%', ax=ax)
-                   
